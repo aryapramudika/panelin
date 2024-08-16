@@ -14,7 +14,7 @@ jobs:
     
     - name: Set release name
       run: |
-        if [[ ${{ github.ref }} == refs/tags/latest ]]; then
+        if [[ ${{ github.ref }} == 'refs/tags/latest' ]]; then
           echo "RELEASE_NAME=Latest Release" >> $GITHUB_ENV
         else
           echo "RELEASE_NAME=Release ${{ github.ref_name }}" >> $GITHUB_ENV
@@ -22,7 +22,7 @@ jobs:
 
     - name: Build Panelin package
       run: |
-        # Your build steps here
+        # Replace this with your actual build steps
         tar -czf panelin.tar.gz panelin panel/
         
     - name: Generate hash
@@ -67,3 +67,4 @@ jobs:
         git config --local user.name "GitHub Action"
         git tag -fa latest -m "Update latest tag"
         git push -f origin latest
+
