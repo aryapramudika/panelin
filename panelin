@@ -1,0 +1,199 @@
+#!/bin/bash
+
+# Function to display how to use script
+usage() {
+    echo "Usage: $0 [-l] -p <panel> [-s <server> [-P <port>]] [-u <user>] [-k <ssh_key_path> | -w <password>]"
+    echo "Options:"
+    echo "  -l: Run locally (optional)"
+    echo "  -p <panel>: Specify panel (aapanel, ajenti, cloudpanel, controlwebpanel, cpanel, froxlor, hestiacp, ispconfig, ispmanager, plesk, vestacp, virtualmin, webmin)"
+    echo "  -s <server>: IP address or hostname of the target server (required for remote installation)"
+    echo "  -P <port>: SSH port number (default: 22, only for remote installation)"
+    echo "  -u <user>: SSH user for the target server (required for remote installation)"
+    echo "  -k <ssh_key_path>: Path to the SSH private key (for key-based authentication)"
+    echo "  -w <password>: SSH password (for password-based authentication)"
+    exit 1
+}
+
+# Function to install dependencies
+install_dependencies() {
+    local is_remote=$1
+    local server=$2
+    local port=$3
+    local user=$4
+    local ssh_key=$5
+    local password=$6
+
+    local install_cmd="
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update
+        sudo apt-get install -y screen curl wget expect
+    elif command -v yum &> /dev/null; then
+        sudo yum -y update
+        sudo yum -y install screen curl wget expect
+    else
+        echo 'Unable to detect package manager. Please install screen, curl, wget, and expect manually.'
+        exit 1
+    fi"
+
+    if [ "$is_remote" = true ]; then
+        run_remote_command "$server" "$port" "$user" "$ssh_key" "$password" "$install_cmd"
+    else
+        eval "$install_cmd"
+    fi
+}
+
+# Function to get installer script path
+get_installer_script() {
+    local panel=$1
+    echo "panel/${panel}.sh"
+}
+
+# Function to run commands on remote server
+run_remote_command() {
+    local server=$1
+    local port=$2
+    local user=$3
+    local ssh_key=$4
+    local password=$5
+    local command=$6
+    
+    if [ -n "$ssh_key" ]; then
+        ssh -i "$ssh_key" -p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$user@$server" "$command"
+    elif [ -n "$password" ]; then
+        sshpass -p "$password" ssh -p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$user@$server" "$command"
+    else
+        echo "Error: Neither SSH key nor password provided."
+        exit 1
+    fi
+}
+
+# Function to install panel remotely
+install_panel_remote() {
+    local panel=$1
+    local server=$2
+    local port=$3
+    local user=$4
+    local ssh_key=$5
+    local password=$6
+
+    echo "Starting remote installation of $panel on $server:$port..."
+
+    # Install dependencies
+    install_dependencies true "$server" "$port" "$user" "$ssh_key" "$password"
+
+    # Get the installer script path
+    local script_path=$(get_installer_script "$panel")
+
+    if [ -f "$script_path" ]; then
+        # Create panel directory on remote server
+        run_remote_command "$server" "$port" "$user" "$ssh_key" "$password" "mkdir -p panel"
+
+        # Copy the installer script to the remote server
+        scp -P "$port" -i "$ssh_key" "$script_path" "$user@$server:panel/"
+
+        # Run installer in screen session
+        run_remote_command "$server" "$port" "$user" "$ssh_key" "$password" "screen -dmS panel_install bash -c 'bash panel/$(basename $script_path) 2>&1 | tee panel_install.log; echo \"Installation completed. Press Ctrl+C to exit.\"; sleep infinity'"
+
+        echo "Installation started in a screen session named 'panel_install' on the remote server."
+        echo "To attach to the session later, SSH into the server and run: screen -r panel_install"
+        echo "Installation log will be available at panel_install.log on the remote server."
+    else
+        echo "Error: Installation script for $panel not found."
+        exit 1
+    fi
+}
+
+# Function to install panel locally
+install_panel_local() {
+    local panel=$1
+
+    echo "Starting local installation of $panel..."
+
+    # Install dependencies
+    install_dependencies false
+
+    # Get the installer script path
+    local script_path=$(get_installer_script "$panel")
+
+    if [ -f "$script_path" ]; then
+        # Run installer in screen session
+        screen -dmS panel_install bash -c "bash $script_path 2>&1 | tee panel_install.log; echo \"Installation completed. Press Ctrl+C to exit.\"; sleep infinity"
+
+        echo "Installation started in a screen session named 'panel_install'."
+        echo "To attach to the session, run: screen -r panel_install"
+        echo "Installation log will be available at panel_install.log in the current directory."
+    else
+        echo "Error: Installation script for $panel not found."
+        exit 1
+    fi
+}
+
+# Main script
+local_install=false
+panel=""
+server=""
+port=22
+user=""
+ssh_key=""
+password=""
+
+# Parse command line options
+while getopts ":lp:s:P:u:k:w:" opt; do
+  case ${opt} in
+    l )
+      local_install=true
+      ;;
+    p )
+      panel=$OPTARG
+      ;;
+    s )
+      server=$OPTARG
+      ;;
+    P )
+      port=$OPTARG
+      ;;
+    u )
+      user=$OPTARG
+      ;;
+    k )
+      ssh_key=$OPTARG
+      ;;
+    w )
+      password=$OPTARG
+      ;;
+    \? )
+      echo "Invalid option: $OPTARG" 1>&2
+      usage
+      ;;
+    : )
+      echo "Invalid option: $OPTARG requires an argument" 1>&2
+      usage
+      ;;
+  esac
+done
+
+if [ -z "$panel" ]; then
+    echo "Error: Panel must be specified with -p option."
+    usage
+fi
+
+case $panel in
+    "aapanel"|"ajenti"|"cloudpanel"|"controlwebpanel"|"cpanel"|"froxlor"|"hestiacp"|"ispconfig"|"ispmanager"|"plesk"|"vestacp"|"virtualmin"|"webmin") ;;
+    *) echo "Invalid panel choice. Available options are: aapanel, ajenti, cloudpanel, controlwebpanel, cpanel, froxlor, hestiacp, ispconfig, ispmanager, plesk, vestacp, virtualmin, webmin"; exit 1 ;;
+esac
+
+if $local_install; then
+    install_panel_local "$panel"
+else
+    if [ -z "$server" ] || [ -z "$user" ]; then
+        echo "Error: Server (-s) and user (-u) must be specified for remote installation."
+        usage
+    fi
+    if [ -z "$ssh_key" ] && [ -z "$password" ]; then
+        echo "Error: Either SSH key (-k) or password (-w) must be provided for remote installation."
+        usage
+    fi
+    install_panel_remote "$panel" "$server" "$port" "$user" "$ssh_key" "$password"
+fi
+
+echo "Script execution completed. The installation is running in a screen session."
